@@ -947,10 +947,14 @@ exit:
 	return ret;
 }
 
+#define LXS_TS_POWER_LOCK_RETRY_MAX	25
+#define LXS_TS_POWER_LOCK_RETRY_MS	40
+
 int lxs_ts_pw_lock(struct lxs_ts *ts, incell_pw_lock status)
 {
 	incell_pw_status pwr_status = { false, false };
-	int ret = 0;
+	int ret = INCELL_ERROR;
+	int retry;
 
 	mutex_lock(&ts->pw_lock);
 
@@ -966,7 +970,23 @@ int lxs_ts_pw_lock(struct lxs_ts *ts, incell_pw_lock status)
 		}
 	}
 
-	ret = incell_power_lock_ctrl(status, &pwr_status);
+	if (status == INCELL_DISPLAY_POWER_LOCK) {
+		for (retry = 0; retry < LXS_TS_POWER_LOCK_RETRY_MAX; retry++) {
+			if (incell_get_power_status(&pwr_status) != INCELL_OK ||
+			    !pwr_status.display_power || !pwr_status.touch_power) {
+				msleep(LXS_TS_POWER_LOCK_RETRY_MS);
+				continue;
+			}
+			ret = incell_power_lock_ctrl(status, &pwr_status);
+			if (ret == INCELL_OK || ret == INCELL_ALREADY_LOCKED)
+				break;
+			if (ret != INCELL_ERROR && ret != INCELL_EBUSY)
+				break;
+			msleep(LXS_TS_POWER_LOCK_RETRY_MS);
+		}
+	} else {
+		ret = incell_power_lock_ctrl(status, &pwr_status);
+	}
 
 	switch (ret) {
 	case INCELL_OK:
@@ -1299,11 +1319,11 @@ int drm_notifier_callback(struct notifier_block *self, unsigned long event, void
 					time.tv_sec, time.tv_nsec);
 				break;
 			case DRM_BLANK_UNBLANK:
-				t_dev_info(ts->dev, "Out of AOD mode first");
+				/* Clear AOD flag only; resume after panel power-on (see sec_ts). */
+				t_dev_info(ts->dev, "Out of AOD mode first\n");
 				mutex_lock(&ts->lock);
 				chip->enable_lpm = false;
 				mutex_unlock(&ts->lock);
-				lxs_hal_enable_device(ts, true);
 				break;
 			default:
 				break;

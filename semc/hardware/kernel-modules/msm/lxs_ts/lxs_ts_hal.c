@@ -2394,9 +2394,19 @@ static int __lxs_hal_enable_work_func(struct lxs_ts *ts)
 
 	err = lxs_ts_pw_lock(ts, INCELL_DISPLAY_POWER_LOCK);
 	if (err) {
+		if (ts->pw_lock_defer_cnt < 10) {
+			ts->pw_lock_defer_cnt++;
+			t_dev_info(ts->dev, "%s: defer enable, err=%d (%d/10)\n",
+				__func__, err, ts->pw_lock_defer_cnt);
+			mutex_unlock(&ts->lock);
+			queue_delayed_work(ts->wq, &ts->enable_work,
+				msecs_to_jiffies(50));
+			return 0;
+		}
 		t_dev_err(ts->dev, "%s: failed lock power, %d\n", __func__, err);
 		goto out;
 	}
+	ts->pw_lock_defer_cnt = 0;
 
 	ts->power_enabled = TS_POWER_ON;
 

@@ -1674,6 +1674,7 @@ struct lxs_ts {
 	int chip_type;
 
 	int lock_cnt;
+	int pw_lock_defer_cnt;
 
 	char chip_id[128];
 	char chip_name[128];
