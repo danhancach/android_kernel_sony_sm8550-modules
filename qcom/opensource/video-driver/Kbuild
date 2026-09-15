@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-only
+# Clang AOSP -Werror
+subdir-ccflags-y += -Wno-strict-prototypes
 
 KBUILD_CPPFLAGS += -DCONFIG_MSM_MMRM=1
 
