@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2024, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
 #include <linux/clk.h>
@@ -310,7 +310,7 @@ static int a6xx_hwsched_gmu_first_boot(struct adreno_device *adreno_dev)
 
 	a6xx_gmu_aop_send_acd_state(gmu, adreno_dev->acd_enabled);
 
-	ret = a6xx_gmu_enable_gdsc(adreno_dev);
+	ret = kgsl_pwrctrl_enable_cx_gdsc(device);
 	if (ret)
 		return ret;
 
@@ -396,7 +396,7 @@ static int a6xx_hwsched_gmu_boot(struct adreno_device *adreno_dev)
 
 	kgsl_pwrctrl_request_state(device, KGSL_STATE_AWARE);
 
-	ret = a6xx_gmu_enable_gdsc(adreno_dev);
+	ret = kgsl_pwrctrl_enable_cx_gdsc(device);
 	if (ret)
 		return ret;
 
@@ -660,6 +660,7 @@ static void a6xx_hwsched_touch_wakeup(struct adreno_device *adreno_dev)
 	set_bit(GMU_PRIV_GPU_STARTED, &gmu->flags);
 
 	device->pwrctrl.last_stat_updated = ktime_get();
+	device->state = KGSL_STATE_ACTIVE;
 
 	kgsl_pwrctrl_set_state(device, KGSL_STATE_ACTIVE);
 
@@ -706,6 +707,7 @@ static int a6xx_hwsched_boot(struct adreno_device *adreno_dev)
 	set_bit(GMU_PRIV_GPU_STARTED, &gmu->flags);
 
 	device->pwrctrl.last_stat_updated = ktime_get();
+	device->state = KGSL_STATE_ACTIVE;
 
 	kgsl_pwrctrl_set_state(device, KGSL_STATE_ACTIVE);
 
@@ -773,6 +775,7 @@ static int a6xx_hwsched_first_boot(struct adreno_device *adreno_dev)
 	device->pwrscale.devfreq_enabled = true;
 
 	device->pwrctrl.last_stat_updated = ktime_get();
+	device->state = KGSL_STATE_ACTIVE;
 
 	kgsl_pwrctrl_set_state(device, KGSL_STATE_ACTIVE);
 
@@ -848,29 +851,17 @@ static void hwsched_idle_check(struct work_struct *work)
 	if (test_bit(GMU_DISABLE_SLUMBER, &device->gmu_core.flags))
 		goto done;
 
-	if (atomic_read(&device->active_cnt) || time_is_after_jiffies(device->idle_jiffies)) {
+	if (!atomic_read(&device->active_cnt) &&
+		time_is_before_eq_jiffies(device->idle_jiffies)) {
+		if (!a6xx_hw_isidle(adreno_dev)) {
+			dev_err(device->dev, "GPU isn't idle before SLUMBER\n");
+			gmu_core_fault_snapshot(device);
+		}
+		a6xx_hwsched_power_off(adreno_dev);
+	} else {
 		kgsl_pwrscale_update(device);
 		kgsl_start_idle_timer(device);
-		goto done;
 	}
-
-	spin_lock(&device->submit_lock);
-	if (device->submit_now) {
-		spin_unlock(&device->submit_lock);
-		kgsl_pwrscale_update(device);
-		kgsl_start_idle_timer(device);
-		goto done;
-	}
-
-	device->skip_inline_submit = true;
-	spin_unlock(&device->submit_lock);
-
-	if (!a6xx_hw_isidle(adreno_dev)) {
-		dev_err(device->dev, "GPU isn't idle before SLUMBER\n");
-		gmu_core_fault_snapshot(device);
-	}
-
-	a6xx_hwsched_power_off(adreno_dev);
 
 done:
 	mutex_unlock(&device->mutex);

@@ -232,8 +232,7 @@ struct kgsl_device {
 	/* For GPU inline submission */
 	uint32_t submit_now;
 	spinlock_t submit_lock;
-	/** @skip_inline_submit: Track if user threads should make an inline submission or not */
-	bool skip_inline_submit;
+	bool slumber;
 
 	struct mutex mutex;
 	uint32_t state;
