@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-only
+# Clang AOSP -Werror; vendor CLO
+subdir-ccflags-y += -Wno-strict-prototypes -Wno-uninitialized -Wno-sometimes-uninitialized
 
 KDIR := $(TOP)/kernel_platform/msm-kernel
 
