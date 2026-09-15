@@ -965,7 +965,7 @@ static bool wcd_mbhc_moisture_detect(struct wcd_mbhc *mbhc, bool detection_type)
 
 static void wcd_mbhc_set_hsj_connect(struct wcd_mbhc *mbhc, bool connect)
 {
-	struct snd_soc_component *component = mbhc->component;
+	struct snd_soc_component *component __maybe_unused = mbhc->component;
 
 #if IS_ENABLED(CONFIG_QCOM_WCD_USBSS_I2C)
 	if (mbhc->wcd_aatc_dev_np) {
