@@ -4442,5 +4442,6 @@ int _ipa_read_ep_reg_v4_0(char *buf, int max_len, int pipe)
 	return INVALID_NO_OF_CHAR;
 }
 void ipa3_eth_debugfs_init(void) {}
+struct ipa_eth_client;
 void ipa3_eth_debugfs_add(struct ipa_eth_client *client) {}
 #endif
