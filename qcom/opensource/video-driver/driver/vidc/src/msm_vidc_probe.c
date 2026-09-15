@@ -19,10 +19,14 @@
 #include "msm_vidc_core.h"
 #include "msm_vidc_memory.h"
 #include "venus_hfi.h"
+#include "video_generated_h"
 
 #define BASE_DEVICE_NUMBER 32
 
 struct msm_vidc_core *g_core;
+
+const char video_banner[] = "Video-Banner: (" VIDEO_COMPILE_BY "@"
+	VIDEO_COMPILE_HOST ") (" VIDEO_COMPILE_TIME ")";
 
 static int msm_vidc_deinit_irq(struct msm_vidc_core *core)
 {
@@ -107,23 +111,8 @@ static ssize_t sku_version_show(struct device *dev,
 
 static DEVICE_ATTR_RO(sku_version);
 
-static ssize_t crash_reason_show(struct device *dev,
-                struct device_attribute *attr, char *buf)
-{
-        struct msm_vidc_core* core = dev_get_drvdata(dev);
-        int r = 0;
-
-        r = snprintf(buf, PAGE_SIZE, "%s\n", core->crash_reason_buf);
-        memset(core->crash_reason_buf, 0, sizeof(core->crash_reason_buf));
-
-        return r;
-}
-
-static DEVICE_ATTR_RO(crash_reason);
-
 static struct attribute *msm_vidc_core_attrs[] = {
 	&dev_attr_sku_version.attr,
-	&dev_attr_crash_reason.attr,
 	NULL
 };
 
@@ -821,7 +810,7 @@ static int __init msm_vidc_init(void)
 {
 	int rc = 0;
 
-	d_vpr_h("%s()\n", __func__);
+	d_vpr_h("%s: %s\n", __func__, video_banner);
 
 	rc = platform_driver_register(&msm_vidc_driver);
 	if (rc) {
