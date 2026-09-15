@@ -1,17 +1,14 @@
 # Makefile for use with Android's kernel/build system
 
-<<<<<<< HEAD
-KBUILD_OPTIONS += CAMERA_KERNEL_ROOT=$(shell pwd)
-KBUILD_OPTIONS += KERNEL_ROOT=$(ROOT_DIR)/$(KERNEL_DIR)
-=======
 CAMERA_GENERATED_DIR := $(OUT_DIR)/camera-kernel
 CAMERA_GENERATED_H := $(CAMERA_GENERATED_DIR)/cam_generated_h
 
 KBUILD_OPTIONS += CAMERA_KERNEL_ROOT=$(KERNEL_SRC)/$(M)
 KBUILD_OPTIONS += CAMERA_GENERATED_DIR=$(CAMERA_GENERATED_DIR)
 KBUILD_OPTIONS += KERNEL_ROOT=$(KERNEL_SRC)
->>>>>>> 41241ba52e (sm8550-modules: camera-kernel: Use OUT_DIR for generated headers)
 KBUILD_OPTIONS += MODNAME=camera
+KBUILD_OPTIONS += BOARD_PLATFORM=$(TARGET_BOARD_PLATFORM)
+KBUILD_OPTIONS += KBUILD_EXTRA_SYMBOLS=$(OUT_DIR)/../sm8550-modules/qcom/opensource/mmrm-driver/Module.symvers
 
 all: modules
 
