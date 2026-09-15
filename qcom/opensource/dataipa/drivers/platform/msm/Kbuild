@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-only
 # Clang AOSP bat -Werror; vendor CLO con prototype cu
-subdir-ccflags-y += -Wno-strict-prototypes -Wno-visibility -Wno-unused-function
+subdir-ccflags-y += -Wno-strict-prototypes -Wno-visibility -Wno-unused-function -Wno-implicit-enum-enum-cast -Wno-enum-conversion
 DATAIPADRVTOP = $(srctree)/techpack/dataipa/drivers/platform/msm
 
 #MSMs - GKI
