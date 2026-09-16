@@ -3663,14 +3663,17 @@ DEFINE_SIMPLE_ATTRIBUTE(sony_camera_debug,
 
 static int sony_camera_debug_register(void)
 {
-	int rc = 0;
 	struct dentry *dbg_file_ptr = NULL;
 
 	dbg_file_ptr = debugfs_create_dir("sony_camera", NULL);
-	if (!dbg_file_ptr) {
-		LOGE("DebugFS could not create directory!");
-		rc = -ENOENT;
-		goto end;
+	if (IS_ERR_OR_NULL(dbg_file_ptr)) {
+		/* CONFIG_DEBUG_FS=n -> -ENODEV: khong canh bao loi */
+		if (IS_ERR(dbg_file_ptr) && PTR_ERR(dbg_file_ptr) == -ENODEV)
+			LOGI("DebugFS not enabled, skip sony_camera debug");
+		else
+			LOGE("DebugFS could not create directory!");
+		g_dbg_file_folder_ptr = NULL;
+		return 0;
 	}
 	/* Store parent inode for cleanup in caller */
 	g_dbg_file_folder_ptr = dbg_file_ptr;
@@ -3680,17 +3683,16 @@ static int sony_camera_debug_register(void)
 
 	if (IS_ERR(dbg_file_ptr)) {
 		if (PTR_ERR(dbg_file_ptr) == -ENODEV)
-			LOGE("DebugFS not enabled in kernel!");
+			LOGI("DebugFS not enabled in kernel!");
 		else
-			rc = PTR_ERR(dbg_file_ptr);
-		goto end;
+			LOGE("DebugFS create log_mask failed %ld",
+					PTR_ERR(dbg_file_ptr));
+		debugfs_remove_recursive(g_dbg_file_folder_ptr);
+		g_dbg_file_folder_ptr = NULL;
+		return 0;
 	}
 
-	return rc;
-end:
-	debugfs_remove_recursive(g_dbg_file_folder_ptr);
-	g_dbg_file_folder_ptr = NULL;
-	return rc;
+	return 0;
 }
 
 static int __init sony_camera_init_module(void)
