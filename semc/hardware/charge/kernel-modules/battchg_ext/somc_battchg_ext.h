@@ -103,6 +103,9 @@ struct somc_bcext_dev {
 	union glink_oem_resp_msg	glink_resp_msg;
 
 	struct notifier_block		psy_nb;
+	bool				psy_nb_registered;
+	/* Xu ly PSY_EVENT ngoai RCU (tranh sleep trong atomic notifier) */
+	struct work_struct		psy_changed_work;
 
 	/* smart charge */
 	bool 				smart_charge_enabled;

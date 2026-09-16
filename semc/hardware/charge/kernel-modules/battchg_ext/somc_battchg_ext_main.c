@@ -2576,22 +2576,16 @@ static int somc_bcext_set_product_code(struct somc_bcext_dev *bcext_dev,
 	return 0;
 }
 
-static int somc_bcext_psy_notifier_cb(struct notifier_block *nb,
-					unsigned long event, void *data)
+static void somc_bcext_psy_changed_work(struct work_struct *work)
 {
-	struct power_supply *psy = data;
+	struct somc_bcext_dev *bcext_dev = container_of(work,
+			struct somc_bcext_dev, psy_changed_work);
+	struct power_supply *psy;
 	union power_supply_propval prop = {0, };
-	struct somc_bcext_dev *bcext_dev = container_of(nb,
-						struct somc_bcext_dev, psy_nb);
 	int rc;
 
-	if (event != PSY_EVENT_PROP_CHANGED)
-		return NOTIFY_OK;
-
-	if (strcmp(psy->desc->name, "battery") == 0) {
-		/* do nothing */
-	}
-	else if (strcmp(psy->desc->name, "usb") == 0) {
+	psy = power_supply_get_by_name("usb");
+	if (psy) {
 		rc = power_supply_get_property(psy, POWER_SUPPLY_PROP_USB_TYPE,
 									&prop);
 		if (!rc && prop.intval != bcext_dev->usb_type) {
@@ -2602,17 +2596,21 @@ static int somc_bcext_psy_notifier_cb(struct notifier_block *nb,
 		rc = power_supply_get_property(psy, POWER_SUPPLY_PROP_ONLINE,
 									&prop);
 		if (rc)
-			bcext_err("Couldn't get online (rc=%d)\n", rc);
+			bcext_err("Couldn't get usb online (rc=%d)\n", rc);
 		else
 			bcext_dev->usb_online = prop.intval;
+		power_supply_put(psy);
 	}
-	else if (strcmp(psy->desc->name, "wireless") == 0) {
+
+	psy = power_supply_get_by_name("wireless");
+	if (psy) {
 		rc = power_supply_get_property(psy, POWER_SUPPLY_PROP_ONLINE,
 									&prop);
 		if (rc)
-			bcext_err("Couldn't get online (rc=%d)\n", rc);
+			bcext_err("Couldn't get wireless online (rc=%d)\n", rc);
 		else
 			bcext_dev->wireless_online = prop.intval;
+		power_supply_put(psy);
 	}
 
 	if (bcext_dev->bootup_shutdown_phase == DURING_POWER_OFF_CHARGE) {
@@ -2623,13 +2621,32 @@ static int somc_bcext_psy_notifier_cb(struct notifier_block *nb,
 					&bcext_dev->offchg_termination_work,
 					msecs_to_jiffies(
 						OFFCHG_TERMINATION_DELAY_MS));
-		} else {
-			if (delayed_work_pending(
-					&bcext_dev->offchg_termination_work))
-				cancel_delayed_work_sync(
+		} else if (delayed_work_pending(
+					&bcext_dev->offchg_termination_work)) {
+			cancel_delayed_work_sync(
 					&bcext_dev->offchg_termination_work);
 		}
 	}
+}
+
+static int somc_bcext_psy_notifier_cb(struct notifier_block *nb,
+					unsigned long event, void *data)
+{
+	struct power_supply *psy = data;
+	struct somc_bcext_dev *bcext_dev = container_of(nb,
+						struct somc_bcext_dev, psy_nb);
+
+	if (event != PSY_EVENT_PROP_CHANGED || !psy || !psy->desc ||
+	    !psy->desc->name)
+		return NOTIFY_OK;
+
+	/* Chi usb/wireless — tranh spam moi lan SOC battery */
+	if (strcmp(psy->desc->name, "usb") &&
+	    strcmp(psy->desc->name, "wireless"))
+		return NOTIFY_OK;
+
+	/* atomic_notifier: khong sleep / get_property / cancel_work_sync o day */
+	schedule_work(&bcext_dev->psy_changed_work);
 
 	return NOTIFY_OK;
 }
@@ -2754,6 +2771,15 @@ static void somc_bcext_cleanup(struct platform_device *pdev,
 					struct somc_bcext_dev *bcext_dev)
 {
 	int rc;
+
+	if (bcext_dev->psy_nb_registered) {
+		power_supply_unreg_notifier(&bcext_dev->psy_nb);
+		bcext_dev->psy_nb_registered = false;
+	}
+	cancel_work_sync(&bcext_dev->psy_changed_work);
+	cancel_delayed_work_sync(&bcext_dev->offchg_termination_work);
+	cancel_delayed_work_sync(&bcext_dev->smart_charge_wdog_work);
+	cancel_delayed_work_sync(&bcext_dev->timed_fake_chg_work);
 
 	class_unregister(&bcext_dev->bcext_class);
 	platform_set_drvdata(pdev, NULL);
@@ -2906,12 +2932,21 @@ static int somc_bcext_probe(struct platform_device *pdev)
 
 	bcext_dev->sdm_therm = DEFAULT_SDM_THERM;
 
+	INIT_WORK(&bcext_dev->psy_changed_work, somc_bcext_psy_changed_work);
+	INIT_DELAYED_WORK(&bcext_dev->smart_charge_wdog_work,
+					somc_bcext_smart_charge_wdog_work);
+	INIT_DELAYED_WORK(&bcext_dev->timed_fake_chg_work,
+					somc_bcext_timed_fake_chg_work);
+	INIT_DELAYED_WORK(&bcext_dev->offchg_termination_work,
+					somc_bcext_offchg_termination_work);
+
 	bcext_dev->psy_nb.notifier_call = somc_bcext_psy_notifier_cb;
 	rc = power_supply_reg_notifier(&bcext_dev->psy_nb);
 	if (rc < 0) {
 		bcext_err("Couldn't register psy notifier (rc=%d)\n", rc);
 		goto error;
 	}
+	bcext_dev->psy_nb_registered = true;
 
 	client_data.id = MSG_OWNER_OEM;
 	client_data.name = "oem";
@@ -2940,13 +2975,6 @@ static int somc_bcext_probe(struct platform_device *pdev)
 		goto error;
 
 	platform_set_drvdata(pdev, bcext_dev);
-
-	INIT_DELAYED_WORK(&bcext_dev->smart_charge_wdog_work,
-					somc_bcext_smart_charge_wdog_work);
-	INIT_DELAYED_WORK(&bcext_dev->timed_fake_chg_work,
-					somc_bcext_timed_fake_chg_work);
-	INIT_DELAYED_WORK(&bcext_dev->offchg_termination_work,
-					somc_bcext_offchg_termination_work);
 
 	somc_bcext_set_product_code(bcext_dev, (u32)bcext_dev->product_code);
 	bcext_dev->usb_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
