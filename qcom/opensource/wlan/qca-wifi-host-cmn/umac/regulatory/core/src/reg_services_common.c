@@ -2860,7 +2860,8 @@ reg_get_band_from_cur_chan_list(struct wlan_objmgr_pdev *pdev,
 	}
 
 	if (!num_channels) {
-		reg_err("Failed to retrieve the channel list");
+		/* Thuong gap khi regulatory chua san sang / country chua set */
+		reg_debug("Failed to retrieve the channel list");
 		return 0;
 	}
 

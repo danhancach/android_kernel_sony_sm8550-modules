@@ -1332,7 +1332,7 @@ static int __cam_req_mgr_send_req(struct cam_req_mgr_core_link *link,
 		}
 	}
 	if (rc < 0) {
-		CAM_WARN_RATE_LIMIT(CAM_CRM, "APPLY FAILED pd %d req_id %lld",
+		CAM_DBG(CAM_CRM, "APPLY FAILED pd %d req_id %lld",
 			dev->dev_info.p_delay, apply_req.request_id);
 		/* Apply req failed notify already applied devs */
 		for (; i >= 0; i--) {
@@ -2270,7 +2270,7 @@ static int __cam_req_mgr_process_req(struct cam_req_mgr_core_link *link,
 				link->retry_cnt = 0;
 			}
 		} else
-			CAM_WARN_RATE_LIMIT(CAM_CRM,
+			CAM_DBG(CAM_CRM,
 				"workqueue congestion, last applied idx:%d rd idx:%d",
 				in_q->last_applied_idx,
 				in_q->rd_idx);

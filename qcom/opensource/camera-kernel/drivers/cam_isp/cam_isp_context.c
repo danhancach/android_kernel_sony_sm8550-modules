@@ -1412,7 +1412,8 @@ static void __cam_isp_ctx_send_sof_timestamp(
 	}
 
 	if (request_id == 0 && (ctx_isp->reported_frame_id == ctx_isp->frame_id)) {
-		CAM_WARN_RATE_LIMIT(CAM_ISP,
+		/* Open/close race - khong bao WARN de tranh spam */
+		CAM_DBG(CAM_ISP,
 			"Missed SOF Recovery for invalid req, Skip notificaiton to userspace Ctx: %u frame_id %u",
 			ctx->ctx_id, ctx_isp->frame_id);
 		return;
@@ -8463,7 +8464,7 @@ static int __cam_isp_ctx_process_evt(struct cam_context *ctx,
 
 	if ((ctx->state == CAM_CTX_ACQUIRED) &&
 		(link_evt_data->evt_type != CAM_REQ_MGR_LINK_EVT_UPDATE_PROPERTIES)) {
-		/* Race open/close HAL — giam muc WARN tranh spam log */
+		/* Race open/close HAL - giam muc WARN tranh spam log */
 		CAM_DBG(CAM_ISP,
 			"Get unexpect evt:%d in acquired state",
 			link_evt_data->evt_type);
@@ -8555,7 +8556,8 @@ static int __cam_isp_ctx_apply_req(struct cam_context *ctx,
 	if (ctx_ops->crm_ops.apply_req) {
 		rc = ctx_ops->crm_ops.apply_req(ctx, apply);
 	} else {
-		CAM_WARN_RATE_LIMIT(CAM_ISP,
+		/* Substate APPLIED khong apply lai - gap khi pipeline cham / close */
+		CAM_DBG(CAM_ISP,
 			"No handle function in activated Substate[%s]",
 			__cam_isp_ctx_substate_val_to_type(
 			ctx_isp->substate_activated));
@@ -8563,7 +8565,7 @@ static int __cam_isp_ctx_apply_req(struct cam_context *ctx,
 	}
 
 	if (rc)
-		CAM_WARN_RATE_LIMIT(CAM_ISP,
+		CAM_DBG(CAM_ISP,
 			"Apply failed in active Substate[%s] rc %d",
 			__cam_isp_ctx_substate_val_to_type(
 			ctx_isp->substate_activated), rc);

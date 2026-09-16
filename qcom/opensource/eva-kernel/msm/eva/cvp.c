@@ -430,7 +430,7 @@ static int msm_probe_cvp_device(struct platform_device *pdev)
 
 	cvp_driver->debugfs_root = msm_cvp_debugfs_init_drv();
 	if (!cvp_driver->debugfs_root)
-		dprintk(CVP_ERR, "Failed to create debugfs for msm_cvp\n");
+		dprintk(CVP_WARN, "Failed to create debugfs for msm_cvp\n");
 
 	core->debugfs_root = msm_cvp_debugfs_init_core(
 		core, cvp_driver->debugfs_root);

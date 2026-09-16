@@ -165,8 +165,7 @@ static bool hdd_tsf_is_initialized(struct hdd_adapter *adapter)
 
 	if (!qdf_atomic_read(&hddctx->tsf.tsf_ready_flag) ||
 	    !hdd_get_th_sync_status(adapter)) {
-		/* TSF GPIO/sync khong dung tren thiet bi nay — dung debug tranh spam */
-		hdd_debug("TSF is not initialized");
+		/* TSF GPIO/sync tat tren pdx237 - khong log (FW van gui event) */
 		return false;
 	}
 
@@ -3181,10 +3180,15 @@ int hdd_get_tsf_cb(void *pcb_cxt, struct stsf *ptsf)
 	if (QDF_IS_STATUS_SUCCESS(hdd_set_delta_tsf(adapter, ptsf)))
 		return 0;
 
-	if (!hdd_tsf_is_initialized(adapter)) {
-		hdd_debug("tsf is not init, ignore tsf event");
+#ifdef WLAN_FEATURE_TSF_PLUS
+	/* pdx237: TSF sync/PTP tat trong INI - bo qua event FW dinh ky */
+	if (!hdd_is_tsf_sync_enabled(hddctx) &&
+	    !hdd_tsf_is_ptp_enabled(hddctx))
+		return 0;
+#endif
+
+	if (!hdd_tsf_is_initialized(adapter))
 		return -EINVAL;
-	}
 
 	hdd_info("tsf cb handle event, device_mode is %d",
 		adapter->device_mode);
