@@ -165,7 +165,8 @@ static bool hdd_tsf_is_initialized(struct hdd_adapter *adapter)
 
 	if (!qdf_atomic_read(&hddctx->tsf.tsf_ready_flag) ||
 	    !hdd_get_th_sync_status(adapter)) {
-		hdd_err("TSF is not initialized");
+		/* TSF GPIO/sync khong dung tren thiet bi nay — dung debug tranh spam */
+		hdd_debug("TSF is not initialized");
 		return false;
 	}
 
@@ -3181,7 +3182,7 @@ int hdd_get_tsf_cb(void *pcb_cxt, struct stsf *ptsf)
 		return 0;
 
 	if (!hdd_tsf_is_initialized(adapter)) {
-		hdd_err("tsf is not init, ignore tsf event");
+		hdd_debug("tsf is not init, ignore tsf event");
 		return -EINVAL;
 	}
 

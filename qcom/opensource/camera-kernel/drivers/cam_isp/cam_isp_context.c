@@ -8463,7 +8463,8 @@ static int __cam_isp_ctx_process_evt(struct cam_context *ctx,
 
 	if ((ctx->state == CAM_CTX_ACQUIRED) &&
 		(link_evt_data->evt_type != CAM_REQ_MGR_LINK_EVT_UPDATE_PROPERTIES)) {
-		CAM_WARN(CAM_ISP,
+		/* Race open/close HAL — giam muc WARN tranh spam log */
+		CAM_DBG(CAM_ISP,
 			"Get unexpect evt:%d in acquired state",
 			link_evt_data->evt_type);
 		return -EINVAL;
