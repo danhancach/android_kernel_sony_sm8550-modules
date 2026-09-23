@@ -4125,6 +4125,370 @@ static ssize_t cs40l2x_dig_scale_show(struct device *dev,
 	return snprintf(buf, PAGE_SIZE, "%d\n", dig_scale);
 }
 
+/*
+ * Pixel haptic: HAL ghi asp_enable=1 truoc khi PAL mo MI2S (~40ms).
+ * Buoc nhe ngay: Class-H + A2HEN + L/R enable + unground amp.
+ * Buoc tre 200ms (BCLK da co): PLL SCLK + ASP 48k + ASP_RX,
+ * roi REINIT_A2H (sau khi DVS goi som bi ket) + I2S_START mailbox.
+ * Codec pcm_ev cung clear mbox neu ack timeout (tranh pha click).
+ * Dung static work — khong them field vao cs40l2x_private.
+ */
+#define CS40L2X_ASP_CLK_CFG_1_536MHZ	0x1b
+#define CS40L2X_ASP_FS_MON_1_536MHZ	0x00054034
+#define CS40L2X_ASP_ENABLE_DELAY_MS	200
+
+static struct delayed_work cs40l2x_asp_deferred_work;
+static struct cs40l2x_private *cs40l2x_asp_deferred_priv;
+static bool cs40l2x_asp_stream_armed;
+
+static int cs40l2x_asp_a2h_path_enable(struct cs40l2x_private *cs40l2x, bool en)
+{
+	struct regmap *regmap = cs40l2x->regmap;
+	unsigned int reg, val = en ? CS40L2X_A2H_ENABLE : CS40L2X_A2H_DISABLE;
+	int ret;
+
+	if (cs40l2x->fw_id_remap != CS40L2X_FW_ID_A2H &&
+	    !(cs40l2x->fw_desc && cs40l2x->fw_desc->id == CS40L2X_FW_ID_A2H))
+		return 0;
+
+	reg = cs40l2x_dsp_reg(cs40l2x, "A2HEN", CS40L2X_XM_UNPACKED_TYPE,
+			      CS40L2X_ALGO_ID_A2H);
+	if (reg) {
+		ret = regmap_write(regmap, reg, val);
+		if (ret)
+			return ret;
+	}
+
+	if (en) {
+		reg = cs40l2x_dsp_reg(cs40l2x, "AUDIOLEFTENABLE",
+				     CS40L2X_XM_UNPACKED_TYPE,
+				     CS40L2X_ALGO_ID_A2H);
+		if (reg) {
+			ret = regmap_write(regmap, reg, 1);
+			if (ret)
+				return ret;
+		}
+		reg = cs40l2x_dsp_reg(cs40l2x, "AUDIORIGHTENABLE",
+				     CS40L2X_XM_UNPACKED_TYPE,
+				     CS40L2X_ALGO_ID_A2H);
+		if (reg) {
+			ret = regmap_write(regmap, reg, 1);
+			if (ret)
+				return ret;
+		}
+	}
+
+	return 0;
+}
+
+static int cs40l2x_asp_swap_refclk(struct cs40l2x_private *cs40l2x, bool to_sclk)
+{
+	struct regmap *regmap = cs40l2x->regmap;
+	unsigned int clk_cfg = to_sclk ? CS40L2X_ASP_CLK_CFG_1_536MHZ : 0x00;
+	unsigned int clk_sel = to_sclk ? CS40L2X_PLLSRC_SCLK : CS40L2X_PLLSRC_MCLK;
+	int ret;
+
+	ret = regmap_update_bits(regmap, CS40L2X_REFCLK_INPUT,
+				 CS40L2X_PLL_OPEN_LOOP_MASK,
+				 CS40L2X_PLL_OPEN_LOOP_MASK);
+	if (ret)
+		return ret;
+	ret = regmap_update_bits(regmap, CS40L2X_REFCLK_INPUT,
+				 CS40L2X_PLL_REFCLK_FREQ_MASK,
+				 clk_cfg << CS40L2X_PLL_REFCLK_FREQ_SHIFT);
+	if (ret)
+		return ret;
+	ret = regmap_update_bits(regmap, CS40L2X_REFCLK_INPUT,
+				 CS40L2X_PLL_REFCLK_SEL_MASK, clk_sel);
+	if (ret)
+		return ret;
+	ret = regmap_update_bits(regmap, CS40L2X_REFCLK_INPUT,
+				 CS40L2X_PLL_OPEN_LOOP_MASK, 0);
+	if (ret)
+		return ret;
+	ret = regmap_update_bits(regmap, CS40L2X_REFCLK_INPUT,
+				 CS40L2X_PLL_REFCLK_EN_MASK,
+				 CS40L2X_PLL_REFCLK_EN_MASK);
+	if (ret)
+		return ret;
+	usleep_range(1000, 1500);
+	return 0;
+}
+
+static int cs40l2x_asp_setup_48k(struct cs40l2x_private *cs40l2x)
+{
+	struct regmap *regmap = cs40l2x->regmap;
+	unsigned int mask = CS40L2X_ASP_WIDTH_RX_MASK | CS40L2X_ASP_FMT_MASK |
+			    CS40L2X_ASP_FSYNC_INV_MASK | CS40L2X_ASP_BCLK_INV_MASK;
+	unsigned int daifmt = CS40L2X_ASP_FMT_I2S;
+	unsigned int asp_wl = 16;
+	int ret;
+
+	ret = regmap_write(regmap, CS40L2X_ASP_CONTROL1,
+			   CS40L2X_ASP_CLK_CFG_1_536MHZ);
+	if (ret)
+		return ret;
+	ret = regmap_update_bits(regmap, CS40L2X_ASP_CONTROL2, mask,
+				 (asp_wl << CS40L2X_ASP_WIDTH_RX_SHIFT) | daifmt);
+	if (ret)
+		return ret;
+	ret = regmap_update_bits(regmap, CS40L2X_ASP_DATA_CONTROL5,
+				 CS40L2X_ASP_RX_WL_MASK, asp_wl);
+	if (ret)
+		return ret;
+	ret = regmap_update_bits(regmap, CS40L2X_ASP_FRAME_CONTROL5,
+				 CS40L2X_ASP_RX1_SLOT_MASK |
+				 CS40L2X_ASP_RX2_SLOT_MASK,
+				 (0 << CS40L2X_ASP_RX1_SLOT_SHIFT) |
+				 (1 << CS40L2X_ASP_RX2_SLOT_SHIFT));
+	if (ret)
+		return ret;
+	return regmap_write(regmap, CS40L2X_FS_MON_0, CS40L2X_ASP_FS_MON_1_536MHZ);
+}
+
+/*
+ * Cho mailbox idle. SonyCirrusDVS goi A2H Delay -> REINIT_A2H (0x7) luc
+ * chua co BCLK; ack timeout de mbox ket 0x7, I2S_START sau do bi nuot.
+ */
+static int cs40l2x_asp_mbox_wait_idle(struct cs40l2x_private *cs40l2x)
+{
+	struct regmap *regmap = cs40l2x->regmap;
+	unsigned int val = 0;
+	int ret, i;
+
+	for (i = 0; i < 100; i++) {
+		ret = regmap_read(regmap, CS40L2X_MBOX_USER_CONTROL, &val);
+		if (ret)
+			return ret;
+		if (val == CS40L2X_USER_CTRL_SUCCESS)
+			return 0;
+		usleep_range(1000, 1100);
+	}
+	dev_warn(cs40l2x->dev, "asp: mbox stuck 0x%x, force clear\n", val);
+	return regmap_write(regmap, CS40L2X_MBOX_USER_CONTROL, 0);
+}
+
+/*
+ * Gui I2S_START/END. Poll dai; fail that su neu DSP khong ack (khong
+ * gia thanh cong) — tranh stream=1 ma motor im.
+ */
+static int cs40l2x_asp_i2s_mailbox(struct cs40l2x_private *cs40l2x,
+				   unsigned int cmd)
+{
+	struct regmap *regmap = cs40l2x->regmap;
+	unsigned int val = 0;
+	int ret, i;
+
+	ret = cs40l2x_asp_mbox_wait_idle(cs40l2x);
+	if (ret)
+		return ret;
+
+	ret = regmap_write(regmap, CS40L2X_MBOX_USER_CONTROL, cmd);
+	if (ret)
+		return ret;
+
+	for (i = 0; i < 100; i++) {
+		usleep_range(1000, 1100);
+		ret = regmap_read(regmap, CS40L2X_MBOX_USER_CONTROL, &val);
+		if (ret)
+			return ret;
+		if (val == CS40L2X_USER_CTRL_SUCCESS)
+			return 0;
+	}
+
+	dev_err(cs40l2x->dev,
+		"asp: mbox cmd=0x%x no ack (val=0x%x)\n", cmd, val);
+	regmap_write(regmap, CS40L2X_MBOX_USER_CONTROL, 0);
+	return -ETIME;
+}
+
+static int cs40l2x_asp_stream_apply(struct cs40l2x_private *cs40l2x, bool en)
+{
+	struct regmap *regmap = cs40l2x->regmap;
+	int ret;
+
+	if (en) {
+		/* Mo amp (oneshot path cung ground_amp(false) truoc trigger) */
+		ret = cs40l2x_ground_amp(cs40l2x, false);
+		if (ret)
+			dev_warn(cs40l2x->dev, "asp: unground amp %d\n", ret);
+
+		ret = cs40l2x_asp_swap_refclk(cs40l2x, true);
+		if (ret)
+			return ret;
+		ret = cs40l2x_asp_setup_48k(cs40l2x);
+		if (ret)
+			goto err_clk;
+		ret = regmap_update_bits(regmap, CS40L2X_ASP_ENABLES1,
+					 CS40L2X_ASP_RX_ENABLE_MASK,
+					 CS40L2X_ASP_RX_ENABLE_MASK);
+		if (ret)
+			goto err_clk;
+		ret = cs40l2x_asp_a2h_path_enable(cs40l2x, true);
+		if (ret)
+			goto err_rx;
+
+		/*
+		 * Sau khi BCLK/PLL san: lam lai REINIT (DVS goi som bi ket),
+		 * roi I2S_START. Neu REINIT fail van thu I2S_START.
+		 */
+		ret = cs40l2x_asp_mbox_wait_idle(cs40l2x);
+		if (!ret) {
+			ret = regmap_write(regmap, CS40L2X_MBOX_USER_CONTROL,
+					   CS40L2X_USER_CTRL_REINIT_A2H);
+			if (!ret) {
+				ret = cs40l2x_asp_mbox_wait_idle(cs40l2x);
+				if (ret)
+					dev_warn(cs40l2x->dev,
+						 "asp: REINIT after clk %d\n",
+						 ret);
+				else
+					dev_info(cs40l2x->dev,
+						 "asp: REINIT after clk ok\n");
+			}
+		}
+
+		ret = cs40l2x_asp_i2s_mailbox(cs40l2x, CS40L2X_A2H_I2S_START);
+		if (ret) {
+			dev_err(cs40l2x->dev, "asp: I2S_START fail %d\n", ret);
+			goto err_rx;
+		}
+		cs40l2x_asp_stream_armed = true;
+		return 0;
+err_rx:
+		regmap_update_bits(regmap, CS40L2X_ASP_ENABLES1,
+				   CS40L2X_ASP_RX_ENABLE_MASK, 0);
+err_clk:
+		cs40l2x_asp_swap_refclk(cs40l2x, false);
+		return ret;
+	} else if (cs40l2x_asp_stream_armed) {
+		cs40l2x_asp_i2s_mailbox(cs40l2x, CS40L2X_A2H_I2S_END);
+		ret = regmap_update_bits(regmap, CS40L2X_ASP_ENABLES1,
+					 CS40L2X_ASP_RX_ENABLE_MASK, 0);
+		if (ret)
+			return ret;
+		ret = cs40l2x_asp_swap_refclk(cs40l2x, false);
+		if (ret)
+			return ret;
+		cs40l2x_asp_stream_armed = false;
+	}
+	return 0;
+}
+
+static void cs40l2x_asp_deferred_fn(struct work_struct *work)
+{
+	struct cs40l2x_private *cs40l2x = cs40l2x_asp_deferred_priv;
+	int ret;
+
+	if (!cs40l2x || !cs40l2x->a2h_enable)
+		return;
+
+	pm_runtime_get_sync(cs40l2x->dev);
+	mutex_lock(&cs40l2x->lock);
+	if (!cs40l2x->a2h_enable)
+		goto out;
+	ret = cs40l2x_asp_stream_apply(cs40l2x, true);
+	if (ret)
+		dev_err(cs40l2x->dev, "asp: deferred stream fail %d\n", ret);
+	else
+		dev_info(cs40l2x->dev, "asp: deferred stream ok\n");
+out:
+	mutex_unlock(&cs40l2x->lock);
+	pm_runtime_mark_last_busy(cs40l2x->dev);
+	pm_runtime_put_autosuspend(cs40l2x->dev);
+}
+
+static ssize_t cs40l2x_asp_enable_show(struct device *dev,
+			struct device_attribute *attr, char *buf)
+{
+	struct cs40l2x_private *cs40l2x = cs40l2x_get_private(dev);
+	struct regmap *regmap = cs40l2x->regmap;
+	unsigned int refclk = 0, asp_en = 0, asp_ctl1 = 0;
+
+	pm_runtime_get_sync(cs40l2x->dev);
+	regmap_read(regmap, CS40L2X_REFCLK_INPUT, &refclk);
+	regmap_read(regmap, CS40L2X_ASP_ENABLES1, &asp_en);
+	regmap_read(regmap, CS40L2X_ASP_CONTROL1, &asp_ctl1);
+	pm_runtime_put_autosuspend(cs40l2x->dev);
+
+	return snprintf(buf, PAGE_SIZE,
+			"%d stream=%d refclk=0x%x asp_en=0x%x ctl1=0x%x\n",
+			cs40l2x->a2h_enable ? 1 : 0,
+			cs40l2x_asp_stream_armed ? 1 : 0,
+			refclk, asp_en, asp_ctl1);
+}
+
+static ssize_t cs40l2x_asp_enable_store(struct device *dev,
+			struct device_attribute *attr,
+			const char *buf, size_t count)
+{
+	struct cs40l2x_private *cs40l2x = cs40l2x_get_private(dev);
+	struct regmap *regmap = cs40l2x->regmap;
+	unsigned int val;
+	int ret = 0;
+
+	ret = kstrtou32(buf, 10, &val);
+	if (ret)
+		return -EINVAL;
+
+	if (val > 0) {
+		cancel_delayed_work_sync(&cs40l2x_asp_deferred_work);
+		pm_runtime_get_sync(cs40l2x->dev);
+		mutex_lock(&cs40l2x->lock);
+
+		ret = regmap_update_bits(regmap, CS40L2X_VBST_CTL_2,
+					 CS40L2X_BST_CTL_SEL_MASK,
+					 CS40L2X_BST_CTL_SEL_CLASSH);
+		if (ret)
+			goto err_en;
+		ret = regmap_update_bits(regmap, CS40L2X_BLOCK_ENABLES2,
+					 CS40L2X_CLASSH_EN_MASK,
+					 CS40L2X_CLASSH_EN_MASK);
+		if (ret)
+			goto err_en;
+		ret = cs40l2x_asp_a2h_path_enable(cs40l2x, true);
+		if (ret)
+			goto err_en;
+
+		cs40l2x->a2h_enable = true;
+		cs40l2x_asp_deferred_priv = cs40l2x;
+		mutex_unlock(&cs40l2x->lock);
+		pm_runtime_mark_last_busy(cs40l2x->dev);
+		pm_runtime_put_autosuspend(cs40l2x->dev);
+
+		INIT_DELAYED_WORK(&cs40l2x_asp_deferred_work,
+				  cs40l2x_asp_deferred_fn);
+		schedule_delayed_work(&cs40l2x_asp_deferred_work,
+				      msecs_to_jiffies(CS40L2X_ASP_ENABLE_DELAY_MS));
+		dev_info(cs40l2x->dev, "asp: enable scheduled (+%dms)\n",
+			 CS40L2X_ASP_ENABLE_DELAY_MS);
+		return count;
+err_en:
+		mutex_unlock(&cs40l2x->lock);
+		pm_runtime_mark_last_busy(cs40l2x->dev);
+		pm_runtime_put_autosuspend(cs40l2x->dev);
+		return ret;
+	}
+
+	cancel_delayed_work_sync(&cs40l2x_asp_deferred_work);
+	pm_runtime_get_sync(cs40l2x->dev);
+	mutex_lock(&cs40l2x->lock);
+	ret = cs40l2x_asp_stream_apply(cs40l2x, false);
+	if (ret)
+		goto err_dis;
+	ret = cs40l2x_asp_a2h_path_enable(cs40l2x, false);
+	if (ret)
+		goto err_dis;
+	cs40l2x->a2h_enable = false;
+	cs40l2x_asp_deferred_priv = NULL;
+	dev_info(cs40l2x->dev, "asp: disable ok\n");
+err_dis:
+	mutex_unlock(&cs40l2x->lock);
+	pm_runtime_mark_last_busy(cs40l2x->dev);
+	pm_runtime_put_autosuspend(cs40l2x->dev);
+	return ret ? ret : count;
+}
+
 static ssize_t cs40l2x_dig_scale_store(struct device *dev,
 			struct device_attribute *attr,
 			const char *buf, size_t count)
@@ -6150,6 +6514,8 @@ static DEVICE_ATTR(redc_comp_enable, 0660, cs40l2x_redc_comp_enable_show,
 		cs40l2x_redc_comp_enable_store);
 static DEVICE_ATTR(dig_scale, 0660, cs40l2x_dig_scale_show,
 		cs40l2x_dig_scale_store);
+static DEVICE_ATTR(asp_enable, 0660, cs40l2x_asp_enable_show,
+		cs40l2x_asp_enable_store);
 static DEVICE_ATTR(gpio1_dig_scale, 0660, cs40l2x_gpio1_dig_scale_show,
 		cs40l2x_gpio1_dig_scale_store);
 static DEVICE_ATTR(gpio1_rise_dig_scale, 0660,
@@ -6266,6 +6632,7 @@ static struct attribute *cs40l2x_dev_attrs[] = {
 	&dev_attr_comp_enable.attr,
 	&dev_attr_redc_comp_enable.attr,
 	&dev_attr_dig_scale.attr,
+	&dev_attr_asp_enable.attr,
 	&dev_attr_gpio1_dig_scale.attr,
 	&dev_attr_gpio1_rise_dig_scale.attr,
 	&dev_attr_gpio1_fall_dig_scale.attr,

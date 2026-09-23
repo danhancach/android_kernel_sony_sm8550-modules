@@ -255,9 +255,16 @@ static int cs40l2x_pcm_ev(struct snd_soc_dapm_widget *w,
 		if (ret)
 			return ret;
 
-		return cs40l2x_ack_write(core, CS40L2X_MBOX_USER_CONTROL,
+		/* Timeout ack de lai mbox=2 pha click — clear neu ket */
+		ret = cs40l2x_ack_write(core, CS40L2X_MBOX_USER_CONTROL,
 					 CS40L2X_A2H_I2S_START,
 					 CS40L2X_A2H_DISABLE);
+		if (ret) {
+			dev_warn(priv->dev, "pcm_ev I2S_START ack %d, clear\n",
+				 ret);
+			regmap_write(regmap, CS40L2X_MBOX_USER_CONTROL, 0);
+		}
+		return 0;
 	case SND_SOC_DAPM_PRE_PMD:
 		ret = regmap_update_bits(regmap, CS40L2X_ASP_ENABLES1,
 					 CS40L2X_ASP_RX_ENABLE_MASK, 0);
@@ -276,9 +283,15 @@ static int cs40l2x_pcm_ev(struct snd_soc_dapm_widget *w,
 				return ret;
 		}
 
-		return cs40l2x_ack_write(core, CS40L2X_MBOX_USER_CONTROL,
+		ret = cs40l2x_ack_write(core, CS40L2X_MBOX_USER_CONTROL,
 					 CS40L2X_A2H_I2S_END,
 					 CS40L2X_A2H_DISABLE);
+		if (ret) {
+			dev_warn(priv->dev, "pcm_ev I2S_END ack %d, clear\n",
+				 ret);
+			regmap_write(regmap, CS40L2X_MBOX_USER_CONTROL, 0);
+		}
+		return 0;
 	default:
 		dev_err(priv->dev, "Invalid PCM event: %d\n", event);
 		return -EINVAL;
@@ -502,10 +515,18 @@ static int cs40l2x_delay_put(struct snd_kcontrol *kcontrol,
 	pm_runtime_get_sync(priv->dev);
 
 	ret = regmap_write(regmap, reg, val);
-	if (!ret)
+	if (!ret) {
 		ret = cs40l2x_ack_write(core, CS40L2X_MBOX_USER_CONTROL,
 					CS40L2X_USER_CTRL_REINIT_A2H,
 					CS40L2X_USER_CTRL_SUCCESS);
+		/* Timeout de mbox=0x7 ket I2S_START — clear de ASP path song */
+		if (ret) {
+			dev_warn(dev, "A2H REINIT timeout (%d), clear mbox\n",
+				 ret);
+			regmap_write(regmap, CS40L2X_MBOX_USER_CONTROL, 0);
+			ret = 0;
+		}
+	}
 
 	pm_runtime_mark_last_busy(priv->dev);
 	pm_runtime_put_autosuspend(priv->dev);
